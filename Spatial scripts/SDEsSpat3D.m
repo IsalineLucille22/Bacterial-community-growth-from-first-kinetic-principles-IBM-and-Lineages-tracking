@@ -1,0 +1,217 @@
+function [t, Nb_Cells_Evol, Pos_S, vect_Cell_lenght_tot, Mass_Cell_Evol, vect_angle_tot, Mass_Cell, num_col, Generation_tree, Mass_Res_Waste_Evol, rho_vect, mu_evol, lag_time, bbRegion, mu_max_cell_init, rho_3D_tot, Vect_Time_saved] = ...
+    SDEsSpat3D(Data, vect_species, T_fin, t_D, Diff_Coeff, t_Diff, dx, dy, Time_forces, Time_saved, length_cell, height_cell, Mass_S_0, Mass_Resource, Mass_Vol, Vol_Box, lz, Threshold_divide, Threshold_Res, vect_rate, std_mu_max, fact_mod_mu, shrink_rate, mat_Pred, Coeff_Browian, Pos_Resource, Pos_S_0, dim_Img)
+index_species = unique(vect_species);
+nb_cells = length(vect_species); %Number of cells
+nb_species = length(index_species); %Number of species
+nb_resources = length(Mass_Resource); %Number of resources. 
+p = 1; l = 1;%Index of saved data
+t = 0;
+N_Fin_iter = floor(T_fin/t_D);
+N_p = floor(N_Fin_iter/Time_forces) + 1;
+[Pos_S, vect_Cell_lenght_tot, Mass_Cell_Evol, vect_angle_tot, num_col, Generation_tree, mu_evol, Vect_Time_saved] = deal(cell(nb_species, N_p)); %vect_Cell_lenght_tot = Pos_S; vect_angle_tot = Pos_S; Generation_tree = Pos_S;
+[rho_vect, Mass_Res_Waste_Evol] = deal(cell(nb_resources, N_p));
+P_S_temp  = zeros(2, nb_cells);
+Nb_Cells_Evol = zeros(nb_species, N_p);
+[Mass_Cell, vect_Cell_length_temp, num_col_tot, lag_time, vect_angle, shrink_rate_cell] = deal(zeros(1,nb_cells));
+Scale_Division = ones(1, nb_cells);
+[rho, ux_init, uy_init] = deal(cell(1,nb_resources));
+[Threshold_Species_Res, mu_max_cell]  = deal(zeros(nb_resources, nb_cells)); %Initialization of the concentration threshold for each cell and resource. When the resource concentration is above this value then the cell can use it.
+%Adapt it to the current data
+for i = 1:nb_species
+    ind = vect_species == index_species(i);
+    Nb_Cells_Evol(i,1) = length(Pos_S_0(1,ind));
+    Pos_S{i, 1} = Pos_S_0(:, ind);
+    %Change it
+    m_length = log(length_cell(index_species(i), 1)) - 0.5*length_cell(index_species(i), 2)^2; s_length = sqrt(log(1 + length_cell(index_species(i), 2)^2/length_cell(index_species(i), 1)^2));
+    vect_Cell_lenght_tot{i, 1} = lognrnd(m_length, s_length, 1, Nb_Cells_Evol(i,1));%Data.axis_major_length';%Attribute a length to each present strain
+    % vect_Cell_lenght_tot{i, 1} = unifrnd(1, 1, 1, Nb_Cells_Evol(i,1))*length_cell(index_species(i));%Data.axis_major_length';%Attribute a length to each present strain
+    vect_angle_tot{i, 1} = unifrnd(0, pi, 1, Nb_Cells_Evol(i,1));%Data.orientation';% 
+    Mass_Cell(ind) = Mass_Vol(index_species(i))*(pi*(height_cell(index_species(i))/2)^2.*(vect_Cell_lenght_tot{i, 1} + 4/6*height_cell(index_species(i))));%Mass_Vol(index_species(i))*(pi*(height_cell(index_species(i))/2)^2 + vect_Cell_lenght_tot{i, 1}.*height_cell(index_species(i)));
+    Mass_Cell_Evol{i, 1} = Mass_Cell(ind);
+    num_col{i, 1} = 1:Nb_Cells_Evol(i,1);%Attribute a number to each colony. Each cell from the same colony will have the same number
+    vect_Cell_length_temp(ind) = vect_Cell_lenght_tot{i,1};
+    num_col_tot(ind) = num_col{i,1};
+    P_S_temp(:, ind) = Pos_S{i,1};%Put all positions in one vector
+    Generation_tree{i, 1} = {};
+    vect_angle(ind) = vect_angle_tot{i, 1};
+    m_lgn = log(Data(index_species(i), 1)) - 0.5*Data(index_species(i), 2)^2; s_lgn = sqrt(log(1 + Data(index_species(i), 2)^2/Data(index_species(i), 1)^2));
+    lag_time(ind) = lognrnd(m_lgn, s_lgn, 1, Nb_Cells_Evol(i,1));%lognrnd(-3, 0.1, 1, Nb_Cells_Evol(i,1));
+    rate_temp = vect_rate{index_species(i)}; %Table of rate to allocate a mu_max to each cell
+    mu_max_cell(:, ind) = max(normrnd(repmat(rate_temp(:,2), 1, Nb_Cells_Evol(i,1)), repmat(std_mu_max(:,index_species(i)), 1, Nb_Cells_Evol(i,1))), 0);%max(normrnd(rate_temp(1,2), 0*0.01, 1, Nb_Cells_Evol(i,1)), 0);
+    shrink_rate_cell(ind) = shrink_rate(index_species(i))*ones(1, Nb_Cells_Evol(i,1));
+    Threshold_Species_Res(:, ind) = repmat(Threshold_Res(index_species(i), :)', 1, Nb_Cells_Evol(i,1));
+    Vect_Time_saved{i, 1} = t*ones(1, Nb_Cells_Evol(i, 1));
+    Generation_tree{i, 1} = 1:Nb_Cells_Evol;
+end
+mu_max_cell_init = mu_max_cell; %min(mu_max_cell, 0.79); %Initial mu_max attributed to each mocro-colony, to compare it with fitted values.
+% mu_max_cell(1, end) = 0;
+vect_Cell_length_temp = [vect_Cell_length_temp; vect_species; vect_angle];
+nb_boxes_res = length(Pos_Resource(1,:)); %Number of resource discretization boxes.
+Mass_Res = zeros(nb_resources, nb_boxes_res);
+x_grid = (dim_Img(1, 1) + dx/2):dx:(dim_Img(1, 2));
+y_grid = (dim_Img(2, 1) + dy/2):dy:(dim_Img(2, 2));
+Generation_tree_temp = 1:nb_cells;
+lx = length(x_grid);
+ly = length(y_grid);
+[y,~] = meshgrid(1:ly,1:lx); % To get coordinate of matrix indices
+uMax = 0.5; %For Lattice Boltzmann
+L = ly-2; y_phys = y-1.5;
+%3D test
+rho_3D = deal(cell(1,nb_resources));
+rho_3D_tot = deal(cell(nb_resources, N_p));
+for i = 1:nb_resources
+    Mass_Res(i,:) = Mass_Resource(i)/lz*ones(1,nb_boxes_res);%Attribute a mass to each present resource
+    Mass_Res_Waste_Evol{i, 1} = Mass_Res(i,:);
+    rho_vect{i,1} = reshape(Mass_Res(i,:), [length(y_grid), length(x_grid)]);%reshape(Mass_Res(i,:), length(x_grid), length(y_grid));
+    rho{i} = rho_vect{i,1};
+    rho_3D{i} = repmat(rho_vect{i,1}, 1, 1, lz);%rho_3D_temp;%
+    rho_3D_tot{i, 1} = rho_3D{i};
+    %Speed initialization
+    ux_init{i} = 4*uMax/(L*L)*(y_phys.*L-y_phys.*y_phys); %x lattice speed %zeros(lx,ly); %For Lattice Boltzmann
+    uy_init{i} = zeros(lx,ly); %y lattice speed; %For Lattice Boltzmann
+end
+%Compute de closest rescource box for each cell
+d_temp_S1R = distEuclid(P_S_temp, Pos_Resource); %Number row = number sum(S_i), Number col = number R
+[~, Index_Res] = min(d_temp_S1R, [], 2);
+[C, w, ic] = unique(Index_Res);%, 'stable');
+duplicate_indices = setdiff(1:numel(Index_Res), w);
+duplicate_indices = unique(Index_Res(duplicate_indices));
+bbRegion = [];
+% % For LatticeBoltzmann
+% t_LB = min(t_Diff);
+% [m, n, q] = size(zeros(5, lx, ly));%size(zeros(9, lx, ly));%
+% [I,J,K] = ndgrid(1:m,1:n,1:q);
+% RowsShift_x = [zeros(1, lx); ones(1, lx); zeros(1, lx); -ones(1, lx); zeros(1, lx)];%[zeros(1, lx); ones(1, lx); zeros(1, lx); -ones(1, lx); zeros(1, lx); ones(1, lx); -ones(1, lx); -ones(1, lx); ones(1, lx)];%
+% RowsShift_y = [zeros(1, ly); zeros(1, ly); ones(1, ly); zeros(1, ly); -ones(1, ly)];%[zeros(1, ly); zeros(1, ly); ones(1, ly); zeros(1, ly); -ones(1, ly); ones(1, ly); ones(1, ly); -ones(1, ly); -ones(1, ly)];%
+% Xshift = mod(J-RowsShift_x-1,n)+1;
+% idx = sub2ind([m, n, q], I, Xshift, K);
+% Yshift = mod(K-RowsShift_y-1, q)+1;
+% idy = sub2ind([m, n, q], I, J, Yshift);
+% id_tot = idy(idx);
+
+%%%%Boundary conditions
+Pos_X = [];%[[dim_Img(1, 1) dim_Img(2, 2)/2]; [dim_Img(1, 2) dim_Img(2, 2)/2]; [dim_Img(1, 2)/2 dim_Img(2, 1)]; [dim_Img(1, 2)/2 dim_Img(2, 2)]];%[[dim_Img(1, 2)/2 dim_Img(2, 1)]; [dim_Img(1, 2)/2 dim_Img(2, 2)]];
+% vect_Cell_length_bound = [dim_Img(1, 2) dim_Img(1, 2) dim_Img(2, 2) dim_Img(2, 2)]; %[2*dim_Img(1, 2) dim_Img(1, 2)];
+% cell_angle_bound = [pi/2, pi/2, 0, 0]; %[0, 0];
+% height_cell_bound = [0, 0, 0, 0]; %[0, 0];
+nb_boundaries = 0;%length(cell_angle_bound);
+% sp_nb = (max(index_species) + 2)*ones(1, nb_boundaries);
+Vect_Boundaries = [];%[vect_Cell_length_bound; cell_angle_bound; height_cell_bound; sp_nb];
+coll_ind = [];
+%%%%
+
+% Initialization of the rates matrices
+Mat_rate = zeros(nb_resources, nb_resources + 2, nb_cells);
+for i = 1:nb_species
+    Mat_rate(:, :, vect_species == index_species(i)) = reshape(repmat(vect_rate{index_species(i)}', sum(vect_species == index_species(i)),1)', nb_resources, nb_resources + 2, sum(vect_species == index_species(i)));
+end
+% kappa_2 = reshape(Mat_rate(:,2,:), nb_resources, nb_cells); %Use only if constant mu_max for each species. Otherwise allocated line 73
+kappa_1 = reshape(Mat_rate(:,1,:), nb_resources, nb_cells);
+kappa_3 = reshape(sum(Mat_rate(:,3:end,:),2), nb_resources, nb_cells);
+kappa_2 = mu_max_cell; %kappa_2(1,:) = mu_max_cell; %Change it to have a mu_max given for each resource. According to a distribution
+yield_temp = kappa_2./(kappa_2 + kappa_3);%.*fact_mod_mu';
+%%%%If a umax factor is considered
+% mu_max_cell = mu_max_cell.*fact_mod_mu';
+% kappa_2 = mu_max_cell;
+% kappa_3 = kappa_2./yield_temp - kappa_2; kappa_3(isnan(kappa_3)) = 0;
+% % kappa_prod = sum(vertcat(vect_rate{:}));
+% % kappa_prod = kappa_prod(:, 3:end);
+% % idx_Res_prod = find(kappa_prod > 0);
+
+%%%%If a yield factor is considered
+yield_temp(1, :) = fact_mod_mu;
+yield_temp(yield_temp > 1) = 1;
+kappa_2 = mu_max_cell;
+kappa_3 = kappa_2./yield_temp - kappa_2; kappa_3(isnan(kappa_3)) = 0;
+Mat_rate = Adjust_Mat_rate(kappa_3, Mat_rate);
+% Mat_rate(1, 4, :) = reshape(kappa_3(1,:), 1, 1, []); %Use vect_rate to determine position of the byproduct resource (work only if one)
+for j = 1:N_Fin_iter
+    [Mass_Cell, Mass_Res, vect_Cell_length_temp, P_S_temp, Ind_Cell_Remove, Generation_tree_temp, num_col_tot, mu_evol_mean_temp, Scale_Division, mu_max_cell, d_temp_S1R, Index_Res, duplicate_indices, C, ic, Mat_rate, kappa_1, kappa_2, kappa_3, shrink_rate_cell, Threshold_Species_Res] = ...
+        VariMassSDEVec(Index_Res, Mass_Cell,...
+            vect_Cell_length_temp, Mass_Res, vect_rate, Mass_Vol, height_cell,...
+            Threshold_Species_Res, t_D, P_S_temp, nb_species, index_species, Threshold_divide.*Mass_S_0, Scale_Division,...
+            Vol_Box, Generation_tree_temp, num_col_tot, lag_time, t, mu_max_cell, d_temp_S1R, Pos_Resource, duplicate_indices, C, ic, Mat_rate, kappa_1, kappa_2, kappa_3, shrink_rate_cell, dx); %Threshold_divide.*Mass_S_0 %Threshold_divide.*length_cell %Threshold.*Length_S_0
+    if ~isempty(Ind_Cell_Remove)
+        P_S_temp(:, Ind_Cell_Remove) = [];%If some cells die 
+        vect_Cell_length_temp(:, Ind_Cell_Remove) = [];%Remove the radius of dead cells
+        Mass_Cell(Ind_Cell_Remove) = [];%Remove the mass of dead cells
+        num_col_tot(Ind_Cell_Remove) = [];%Remove the colony number of dead cells
+        Scale_Division(Ind_Cell_Remove) = [];
+        mu_max_cell(:,Ind_Cell_Remove) = [];
+        shrink_rate_cell(Ind_Cell_Remove) = [];
+        Generation_tree_temp(Ind_Cell_Remove) = [];
+        mu_evol_mean_temp(:, Ind_Cell_Remove) = [];
+        d_temp_S1R(Ind_Cell_Remove, :) = []; 
+        Index_Res(Ind_Cell_Remove) = [];
+        Mat_rate(:, :, Ind_Cell_Remove) = [];
+        Threshold_Species_Res(:, Ind_Cell_Remove) = [];
+        kappa_1(:, Ind_Cell_Remove) = [];kappa_2(:, Ind_Cell_Remove) = [];kappa_3(:, Ind_Cell_Remove) = [];
+        [C, w, ic] = unique(Index_Res);%, 'stable');
+        duplicate_indices = setdiff(1:numel(Index_Res), w);
+        duplicate_indices = unique(Index_Res(duplicate_indices));
+    end
+    % vect_species = vect_Cell_length_temp(2,:);
+    %Border conditions reflexion %Move boundary conditions
+    P_S_temp(1, P_S_temp(1,:) < dim_Img(1, 1)) = dim_Img(1, 2) - (dim_Img(1, 1) - P_S_temp(1,P_S_temp(1,:) < dim_Img(1, 1))); 
+    P_S_temp(2, P_S_temp(2,:) < dim_Img(2, 1)) = dim_Img(2, 2) - (dim_Img(2, 1) - P_S_temp(2,P_S_temp(2,:) < dim_Img(2, 1)));
+    P_S_temp(1, P_S_temp(1,:) > dim_Img(1, 2)) = dim_Img(1, 1) - (dim_Img(1, 2) - P_S_temp(1,P_S_temp(1,:) > dim_Img(1, 2))); 
+    P_S_temp(2, P_S_temp(2,:) > dim_Img(2, 2)) = dim_Img(2, 1) - (dim_Img(2, 2) - P_S_temp(2,P_S_temp(2,:) > dim_Img(2, 2)));
+    %Diffusion of the resources
+    [rho, Mass_Res, rho_3D] = CrankNicolsonVec3D(Mass_Res, rho_3D, lz, dy, dx, t_D, Diff_Coeff, 0, dim_Img);
+%     [rho, Mass_Res, rho_3D] = BoltzmannLattice(Mass_Res, dx, t_D, t_Diff, t_LB, id_tot, dim_Img);
+    %New positions due to pushing forces
+    if mod(j, Time_forces) == 0
+        [P_S_temp, vect_Cell_length_temp(3,:), ind_Pred, coll_ind] = NewPos(Time_forces*t_D, P_S_temp, vect_Cell_length_temp, Pos_X, mat_Pred, height_cell, Mass_Cell, Vect_Boundaries, nb_boundaries, t, coll_ind);
+        if ~isempty(ind_Pred)
+            P_S_temp(:, ind_Pred) = []; 
+            vect_Cell_length_temp(:, ind_Pred) = []; %If some cells die 
+            Mass_Cell(ind_Pred) = []; 
+            num_col_tot(ind_Pred) = [];%Remove the mass of dead cells
+            Scale_Division(ind_Pred) = [];
+            mu_max_cell(:,ind_Pred) = [];
+            Generation_tree_temp(ind_Pred) = [];       
+            shrink_rate_cell(ind_Pred) = [];
+            mu_evol_mean_temp(:, ind_Pred) = [];
+            Mat_rate(:, :, ind_Pred) = [];
+            Threshold_Species_Res(:, ind_Pred) = [];
+            kappa_1(:, ind_Pred) = [];kappa_2(:, ind_Pred) = [];kappa_3(:, ind_Pred) = [];
+        end
+        vect_species = vect_Cell_length_temp(2,:);
+        d_temp_S1R = distEuclid(P_S_temp, Pos_Resource); %Number row = number sum(S_i), Number col = number R
+        [~, Index_Res] = min(d_temp_S1R, [], 2);
+        [C, w, ic] = unique(Index_Res);%, 'stable');
+        duplicate_indices = setdiff(1:numel(Index_Res), w);
+        duplicate_indices = unique(Index_Res(duplicate_indices));
+        for i = 1:nb_species
+            ind = vect_species == index_species(i);
+            vect_Cell_length_temp(3,ind) = vect_Cell_length_temp(3,ind) + Coeff_Browian(index_species(i))*sqrt(t_D*Time_forces*2).*normrnd(0,0.03,1,length(P_S_temp(1, ind))); %Orientation in the mother way, use num_col.
+%             vect_Cell_length_temp(3,ind) = vect_Cell_length_temp(3,ind) + Coeff_Browian(index_species(i))*sqrt(t_D*Time_saved*2).*normrnd((vect_Cell_length_temp(3,num_col_tot(ind)) - vect_Cell_length_temp(3,ind)),0.05,1,length(P_S_temp(1, ind))); %Orientation in the mother way, use num_col.
+            Cell_dir = [cos(vect_Cell_length_temp(3,:)); sin(vect_Cell_length_temp(3,:))];
+            P_S_temp(:, ind) = P_S_temp(:, ind) + Coeff_Browian(index_species(i))*sqrt(t_D*Time_forces*2).*normrnd(0.05*Cell_dir(:, ind),0.0012,2,length(P_S_temp(1, ind)));
+            if mod(j, Time_saved) == 0
+                Nb_Cells_Evol(i, p+1) = sum(ind);
+                Pos_S{i, p+1} = P_S_temp(:, ind);
+                vect_Cell_lenght_tot{i, p+1} = vect_Cell_length_temp(1,ind);%Attribute a length to each present strain
+                Mass_Cell_Evol{i, p+1} = Mass_Cell(ind);
+                vect_angle_tot{i, p+1} = vect_Cell_length_temp(3,ind);
+                num_col{i, p+1} = num_col_tot(ind);%Attribute a number to each colony. Each cell from the same colony will have the same number
+                Generation_tree{i, p+1} = Generation_tree_temp(ind);
+                mu_evol{i, p+1} = mu_evol_mean_temp(:,ind(1:length(mu_evol_mean_temp(1,:)))); %We have to add the length(mu_max_mean_temp(1,:)) because it is possible there is a time gap between the mu_max computed and the number of cells (if there is a new cell created). 
+                Vect_Time_saved{i, p+1} = t*ones(1, Nb_Cells_Evol(i, p+1));
+            end
+        end 
+        if mod(j, Time_saved) == 0
+            for i = 1:nb_resources
+                rho_vect{i, p+1} = rho{i}; %reshape(rho(i,:,:), length(x_grid), length(x_grid));%
+                Mass_Res_Waste_Evol{i, p+1} = Mass_Res(i,:);
+                rho_3D_tot{i, p+1} = rho_3D{i};
+            end
+            p = p + 1;
+        end
+        l = l + 1;
+        if mod(l, 100) == 0 
+            disp(strcat('Iterations :', num2str(j-1), '/',  num2str(N_Fin_iter)));
+        end
+    end
+    t = t + t_D;
+end

@@ -1,0 +1,111 @@
+function [h, X_io, X_jo, n] = OverlapVal_v2(Seg, d_0, Over, n, X_o)
+Seg_1_temp = Seg{1};
+Seg_2_temp = Seg{2};
+
+% Define the points A, B for the first segment and C, D for the second segment
+A = Seg_1_temp(:,1);
+B =  Seg_1_temp(:,2);
+pt_1 = Seg_2_temp(:,1);
+pt_2 = Seg_2_temp(:,2);
+
+% Vectors for each segment
+AB = B - A;
+pt_1_pt_2 = pt_2 - pt_1;
+Apt_1 = A - pt_1;
+
+denom = dot(AB, AB)*dot(pt_1_pt_2, pt_1_pt_2) - dot(AB, pt_1_pt_2)*dot(AB, pt_1_pt_2);
+
+%If denom is zero, the segments are parallel, handle separately
+if denom < 1e-10
+    proj = zeros(2, 4); t = zeros(4,1); dist = zeros(4,1);
+    n_vec = zeros(2, 4);
+    int_pt = [A B pt_1 pt_2];
+    % If parallel, find closest point from one endpoint to the other segment
+    [proj(:, 1), t(1)] = proj_point_to_segment(A, pt_1, pt_2);
+    [proj(:, 2), t(2)] = proj_point_to_segment(B, pt_1, pt_2);
+    [proj(:, 3), t(3)] = proj_point_to_segment(pt_1, A, B);
+    [proj(:, 4), t(4)] = proj_point_to_segment(pt_2, A, B);
+    n_vec(:, 1) = -(A - proj(:,1)); n_vec(:, 2) = -(B - proj(:,2));
+    n_vec(:, 3) = pt_1 - proj(:,3); n_vec(:, 4) = pt_2 - proj(:,4);
+    dist(1) = norm(n_vec(:, 1)); % Distance from A to segment pts
+    dist(2) = norm(n_vec(:, 2)); % Distance from B to segment pts
+    dist(3) = norm(n_vec(:, 3)); % Distance from pt_1 to segment AB
+    dist(4) = norm(n_vec(:, 4)); % Distance from pt_2 to segment AB
+    [min_dist, ind_min] = min([dist(1), dist(2), dist(3), dist(4)]); % Closest distance
+    Over = d_0 - min_dist; 
+    n = -n_vec(:, ind_min)/min_dist; %Direction vector
+    X_io = proj(:, ind_min)*((2 - ind_min)<0) + int_pt(:, ind_min)*((2 - ind_min)>=0);
+    X_jo = proj(:, ind_min)*((2 - ind_min)>=0) + int_pt(:, ind_min)*((2 - ind_min)<0);
+
+else
+    
+    s = (dot(AB, pt_1_pt_2)*dot(pt_1_pt_2, Apt_1) - dot(pt_1_pt_2, pt_1_pt_2)*dot(AB, Apt_1))/denom;
+    t = (dot(AB, AB)*dot(pt_1_pt_2, Apt_1) - dot(AB, pt_1_pt_2)*dot(AB, Apt_1))/denom;
+    
+    % Clamp s and t within [0,1] to ensure points lie on the segments
+    s = max(0, min(1, s));
+    t = max(0, min(1, t));
+
+    
+    % Closest points on each segment
+    X_io = A + s*AB;
+    X_jo = pt_1 + t*pt_1_pt_2;
+    
+    min_dist = norm(X_io - X_jo);
+    
+    % Additional checks for endpoint projections
+    % Project endpoints of AB onto CD and vice versa, and calculate distances
+    [proj_A_on_CD, ~, dist_A_on_CD] = proj_point_to_segment(A, pt_1, pt_2);
+    [proj_B_on_CD, ~, dist_B_on_CD] = proj_point_to_segment(B, pt_1, pt_2);
+    [proj_C_on_AB, ~, dist_C_on_AB] = proj_point_to_segment(pt_1, A, B);
+    [proj_D_on_AB, ~, dist_D_on_AB] = proj_point_to_segment(pt_2, A, B);
+
+    
+    % Find the minimal distance from all cases
+    [min_dist, id_case] = min([min_dist, dist_A_on_CD, dist_B_on_CD, dist_C_on_AB, dist_D_on_AB]);
+    
+    % Update closest points based on the minimal distance case
+    switch id_case
+    case 2
+        X_io = A;
+        X_jo = proj_A_on_CD;
+    case 3
+        X_io = B;
+        X_jo = proj_B_on_CD;
+    case 4
+        X_io = proj_C_on_AB;
+        X_jo = pt_1;
+    case 5
+        X_io = proj_D_on_AB;
+        X_jo = pt_2;
+    end
+
+
+    n_vect = X_jo - X_io; %Inverse that
+    n = -n_vect/min_dist;
+    Over = d_0 - min_dist;
+end
+h = max(0, Over);
+
+if h > 0
+    if isnan(n(1))
+        n_line = (B - A)/norm(B - A);
+        n = [-n_line(2); n_line(1)];
+        n = n/norm(n);
+    end
+else
+    n = [1;0];
+    X_io = [0;0];
+    X_jo = [0;0];
+end
+end
+
+% Function to project a point onto a segment
+function [proj_point, t, min_dist] = proj_point_to_segment(pt, pt_seg_A, pt_seg_B)
+    AB = (pt_seg_B - pt_seg_A);
+    v_1 = pt - pt_seg_A;
+    t = dot(v_1, AB)/dot(AB, AB);
+    t = max(0, min(1, t)); % Clamp t to the range [0, 1] to stay on the segment
+    proj_point = pt_seg_A + t*AB;
+    min_dist = norm(proj_point - pt);
+end
