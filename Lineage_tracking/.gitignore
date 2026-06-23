@@ -1,0 +1,11 @@
+# Ignore Excel files
+*.xlsx
+
+# Ignore Mac system files
+.DS_Store
+
+# Ignore folders
+Figures/
+Data/
+Results/
+Videos/
